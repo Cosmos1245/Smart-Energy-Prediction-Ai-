@@ -55,34 +55,22 @@ def prepare_sequences(df_scaled, seq_len=10):
     return np.array(X), np.array(y)
 
 def build_train_model(X, y, seq_len=10, lstm_units=64, layers=2, epochs=20, batch_size=16):
-    # Cast to float32 to avoid dtype issues
-    X = X.astype(np.float32)
-    y = y.astype(np.float32)
-    
     model = Sequential()
     model.add(tf.keras.Input(shape=(seq_len, X.shape[2])))
     for i in range(layers - 1):
         model.add(LSTM(lstm_units, return_sequences=True))
     model.add(LSTM(lstm_units))
-    model.add(Dense(y.shape[1]))
+    model.add(Dense(X.shape[2]))
     model.compile(optimizer='adam', loss='mse')
-
-    st.write(f"Training model with X shape: {X.shape}, y shape: {y.shape}")
-
     progress_bar = st.progress(0)
-    try:
-        for epoch in range(epochs):
-            model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0)
-            progress_bar.progress((epoch + 1) / epochs)
-    except Exception as e:
-        st.error(f"Error during training: {e}")
-        progress_bar.empty()
-        return None
+    for epoch in range(epochs):
+        model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0)
+        progress_bar.progress((epoch + 1) / epochs)
     progress_bar.empty()
     return model
 
 def predict_next(model, df_scaled, scaler, seq_len=10):
-    next_input = np.array([df_scaled.iloc[-seq_len:].values], dtype=np.float32)
+    next_input = np.array([df_scaled.iloc[-seq_len:].values])
     next_scaled = model.predict(next_input, verbose=0)
     next_pred = scaler.inverse_transform(next_scaled)[0]
     current_actual = scaler.inverse_transform([df_scaled.iloc[-1].values])[0]
@@ -93,7 +81,7 @@ def pct_change(now, future):
 
 def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     future_preds = []
-    input_seq = df_scaled.iloc[-seq_len:].values.astype(np.float32).copy()
+    input_seq = df_scaled.iloc[-seq_len:].values.copy()
     for _ in range(future_steps):
         input_array = np.array([input_seq])
         next_scaled = model.predict(input_array, verbose=0)[0]
@@ -163,7 +151,7 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
 
 def main():
     st.set_page_config(page_title="Advanced SEPS", layout="wide", page_icon="⚡")
-
+    
     # Theme toggle
     if "dark_mode" not in st.session_state:
         st.session_state.dark_mode = False
@@ -181,7 +169,7 @@ def main():
     lstm_units = st.sidebar.slider("Units per Layer", 16, 256, 64, step=16)
     epochs = st.sidebar.slider("Training Epochs", 5, 50, 20)
     batch_size = st.sidebar.selectbox("Batch Size", [8, 16, 32, 64], index=1)
-
+    
     st.sidebar.markdown("### Forecast Settings")
     future_days = st.sidebar.slider("Days to Forecast", 7, 60, 30)
 
@@ -218,11 +206,8 @@ def main():
         with st.spinner("Training LSTM..."):
             model = build_train_model(X, y, seq_len=seq_len,
                                     lstm_units=lstm_units, layers=lstm_layers, epochs=epochs, batch_size=batch_size)
-        if model:
-            st.session_state.model = model
-            st.success("Training completed!")
-        else:
-            st.error("Training failed. Check the error messages above.")
+        st.session_state.model = model
+        st.success("Training completed!")
 
     if "model" not in st.session_state:
         st.info("Train the LSTM model to proceed.")
@@ -232,14 +217,21 @@ def main():
 
     st.subheader("Next Day Prediction")
     next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len=seq_len)
+
+    # Safety check - ensure arrays length match expected appliance count (3)
+    if len(current_actual) != 3 or len(next_pred) != 3:
+        st.error("Prediction outputs shape mismatch! Expected 3 features (Light, Fan, Iron).")
+        st.write(f"current_actual shape: {current_actual.shape}, next_pred shape: {next_pred.shape}")
+        return
+
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
 
     pred_df = pd.DataFrame({
         'Appliance': ['Light', 'Fan', 'Iron'],
-        'Current Usage (A)': current_actual.round(2),
-        'Next Day Prediction (A)': next_pred.round(2),
+        'Current Usage (A)': np.round(current_actual[:3], 2).tolist(),
+        'Next Day Prediction (A)': np.round(next_pred[:3], 2).tolist(),
         'Percentage Change (%)': [light_change, fan_change, iron_change]
     })
 
