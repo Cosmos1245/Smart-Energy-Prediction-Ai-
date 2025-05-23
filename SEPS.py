@@ -12,16 +12,21 @@ from datetime import datetime
 
 # === Firebase Setup using Streamlit secrets ===
 def init_firebase():
-    firebase_config = st.secrets["firebase"]
-    # Fix private_key newline characters
+    # Make a copy of the secrets dictionary so we can safely modify it
+    firebase_config = dict(st.secrets["firebase"])  
+    # Fix the private_key formatting by replacing escaped newlines with real newlines
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
+    
     cred = credentials.Certificate(firebase_config)
+    
+    # Prevent reinitialization error if Firebase app is already initialized
     try:
         firebase_admin.get_app()
     except ValueError:
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
         })
+
 
 init_firebase()
 
