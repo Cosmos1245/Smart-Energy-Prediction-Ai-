@@ -14,9 +14,10 @@ from datetime import datetime
 # --- Firebase Initialization ---
 def init_firebase():
     # Parse the JSON string from secrets into a dict
-    firebase_config = json.loads(st.secrets["firebase"])
+    firebase_json = st.secrets["firebase"]
+    firebase_config = json.loads(firebase_json)
     
-    # Fix private_key formatting (replace escaped newlines with actual newlines)
+    # Fix the private_key newlines
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
     
     if not firebase_admin._apps:
@@ -24,7 +25,7 @@ def init_firebase():
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
         })
-    st.success("✅ Firebase initialized")
+
 
 # --- Fetch data from Firebase ---
 def fetch_data():
