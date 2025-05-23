@@ -13,8 +13,12 @@ from datetime import datetime
 
 # --- Firebase Initialization ---
 def init_firebase():
-    firebase_config = dict(st.secrets["firebase"])
+    # Parse the JSON string from secrets into a dict
+    firebase_config = json.loads(st.secrets["firebase"])
+    
+    # Fix private_key formatting (replace escaped newlines with actual newlines)
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
+    
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
