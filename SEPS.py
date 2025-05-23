@@ -12,14 +12,12 @@ from datetime import datetime
 
 def init_firebase():
     firebase_config = dict(st.secrets["firebase"])
-
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app'
         })
 
-# --- Fetch data from Firebase ---
 def fetch_data():
     readings_ref = db.reference('/readings')
     readings_raw = readings_ref.get() or {}
@@ -37,13 +35,11 @@ def fetch_data():
     df.dropna(inplace=True)
     return df
 
-# --- Normalize data ---
 def normalize_data(df):
     scaler = MinMaxScaler()
     df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns, index=df.index)
     return df_scaled, scaler
 
-# --- Prepare sequences ---
 def prepare_sequences(df_scaled, seq_len=10):
     X, y = [], []
     for i in range(len(df_scaled) - seq_len):
@@ -51,7 +47,6 @@ def prepare_sequences(df_scaled, seq_len=10):
         y.append(df_scaled.iloc[i+seq_len].values)
     return np.array(X), np.array(y)
 
-# --- Build and train LSTM model ---
 def build_train_model(X, y, seq_len=10):
     model = Sequential([
         tf.keras.Input(shape=(seq_len, 3)),
@@ -63,7 +58,6 @@ def build_train_model(X, y, seq_len=10):
     model.fit(X, y, epochs=20, batch_size=16, verbose=1)
     return model
 
-# --- Predict next step ---
 def predict_next(model, df_scaled, scaler, seq_len=10):
     next_input = np.array([df_scaled.iloc[-seq_len:].values])
     next_scaled = model.predict(next_input)
@@ -71,11 +65,9 @@ def predict_next(model, df_scaled, scaler, seq_len=10):
     current_actual = scaler.inverse_transform([df_scaled.iloc[-1].values])[0]
     return next_pred, current_actual
 
-# --- % Change Calculation ---
 def pct_change(now, future):
     return ((future - now) / now * 100) if now else 0
 
-# --- 30-Day Forecast ---
 def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     future_preds = []
     input_seq = df_scaled.iloc[-seq_len:].values.copy()
@@ -94,7 +86,6 @@ def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     )
     return future_df
 
-# --- Plot forecasted usage and cost ---
 def plot_forecast(future_df):
     future_dates = pd.date_range(start=datetime.now(), periods=len(future_df), freq='D')
     future_df.index = future_dates
@@ -119,7 +110,6 @@ def plot_forecast(future_df):
     plt.tight_layout()
     st.pyplot(fig2)
 
-# --- Weekly and Monthly Trends ---
 def plot_trends(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -138,7 +128,6 @@ def plot_trends(df_original):
     plt.tight_layout()
     st.pyplot(fig)
 
-# --- Anomaly Detection ---
 def detect_anomalies(df_original):
     rolling_mean = df_original[['light', 'fan', 'iron']].rolling(window=12).mean()
     rolling_std = df_original[['light', 'fan', 'iron']].rolling(window=12).std()
@@ -148,11 +137,9 @@ def detect_anomalies(df_original):
     ].dropna()
     return anomalies
 
-# --- Appliance Efficiency Score ---
 def compute_efficiency(df_original):
     return (1 / (1 + df_original[['light', 'fan', 'iron']].var())) * 100
 
-# --- Seasonal Usage Pattern ---
 def plot_seasonal_usage(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -165,7 +152,6 @@ def plot_seasonal_usage(df_original):
     ax.set_ylabel("Average Readings")
     st.pyplot(fig)
 
-# --- Upload Forecast to Firebase ---
 def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies):
     forecast_ref = db.reference('/forecast')
     next_cost = next_pred[0] * 2 + next_pred[1] * 1.5 + next_pred[2] * 3
@@ -232,7 +218,8 @@ def main():
 
     st.subheader("Appliance Efficiency Scores")
     efficiency = compute_efficiency(df_original)
-    st.write(efficiency)
+    st.dataframe(efficiency.to_frame('Efficiency Score').T)  # Transposed for better view
+
     efficiency_score = efficiency.to_dict()
 
     st.subheader("Seasonal Usage Patterns")
