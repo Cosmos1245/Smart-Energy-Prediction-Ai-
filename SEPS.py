@@ -25,7 +25,7 @@ def fetch_data():
         try:
             ts = int(key)
             return 1577836800 <= ts <= 2082758400
-        except:
+        except Exception:
             return False
     readings_filtered = {k: v for k, v in readings_raw.items() if is_valid_unix(k)}
     df = pd.DataFrame.from_dict(readings_filtered, orient='index')
@@ -199,6 +199,10 @@ def main():
     st.write(f"Change in Fan Usage: {fan_change:.2f}%")
     st.write(f"Change in Iron Usage: {iron_change:.2f}%")
 
+    # Show the estimated cost always, not just in the report
+    estimated_cost = next_pred[0]*2 + next_pred[1]*1.5 + next_pred[2]*3
+    st.markdown(f"💰 **Estimated Cost of Next Usage**: ₹{estimated_cost:.2f}")
+
     future_df = forecast_future(model, df_scaled, scaler)
 
     st.subheader("30-Day Forecast")
@@ -218,7 +222,8 @@ def main():
 
     st.subheader("Appliance Efficiency Scores")
     efficiency = compute_efficiency(df_original)
-    st.dataframe(efficiency.to_frame('Efficiency Score').T)  # Transposed for better view
+    # Show as a table with correct heading (and not a '0' header)
+    st.dataframe(efficiency.rename_axis('Appliance').to_frame('Efficiency Score').T)
 
     efficiency_score = efficiency.to_dict()
 
@@ -237,7 +242,7 @@ def main():
 - Fan usage {'increased significantly' if fan_change > 10 else 'decreased significantly' if fan_change < -10 else 'increased moderately' if fan_change > 0 else 'decreased moderately'} ({fan_change:+.1f}%) {'🔺' if fan_change > 0 else '▼'}
 - Iron usage {'increased significantly' if iron_change > 10 else 'decreased significantly' if iron_change < -10 else 'increased moderately' if iron_change > 0 else 'decreased moderately'} ({iron_change:+.1f}%) {'🔺' if iron_change > 0 else '▼'}
 
-💰 **Estimated Cost of Next Usage**: ₹{(next_pred[0]*2 + next_pred[1]*1.5 + next_pred[2]*3):.2f}
+💰 **Estimated Cost of Next Usage**: ₹{estimated_cost:.2f}
 
 {'✅ No significant anomalies detected.' if anomalies.empty else '⚠️ Anomalies detected!'}
 
