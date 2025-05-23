@@ -10,7 +10,7 @@ from firebase_admin import credentials, db
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-#def init_firebase():
+def init_firebase():
     firebase_config = dict(st.secrets["firebase"])  # Make a mutable copy
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
 
