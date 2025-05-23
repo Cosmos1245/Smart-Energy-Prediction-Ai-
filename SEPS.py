@@ -9,7 +9,6 @@ import firebase_admin
 from firebase_admin import credentials, db
 import matplotlib.pyplot as plt
 from datetime import datetime
-import json
 
 # === Firebase Setup using Streamlit secrets ===
 def init_firebase():
@@ -17,9 +16,12 @@ def init_firebase():
     # Fix private_key newline characters
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
     cred = credentials.Certificate(firebase_config)
-    firebase_admin.initialize_app(cred, {
-        'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
-    })
+    try:
+        firebase_admin.get_app()
+    except ValueError:
+        firebase_admin.initialize_app(cred, {
+            'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
+        })
 
 init_firebase()
 
@@ -27,11 +29,14 @@ init_firebase()
 def fetch_data():
     readings_ref = db.reference('/readings')
     readings_raw = readings_ref.get()
+    if readings_raw is None:
+        st.error("No data found at /readings")
+        return pd.DataFrame()
 
     def is_valid_unix(key):
         try:
             ts = int(key)
-            return 1577836800 <= ts <= 2082758400
+            return 1577836800 <= ts <= 2082758400  # roughly 2020 to 2036
         except:
             return False
 
@@ -227,6 +232,10 @@ def format_change(pct):
 # === Main Execution ===
 def main():
     df = fetch_data()
+    if df.empty:
+        st.error("No valid data to process.")
+        return
+
     df_original = df.copy()
     df_scaled, scaler = normalize_data(df)
     X, y = prepare_sequences(df_scaled)
