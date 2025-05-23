@@ -149,38 +149,39 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
         'anomalies': anomalies.to_dict(orient='records'),
     })
 
+def format_change(pct):
+    if pct > 15:
+        return f"increased significantly (+{pct:.1f}%) 🔺"
+    elif pct > 5:
+        return f"increased moderately (+{pct:.1f}%) ▲"
+    elif pct > -5:
+        return f"is stable ({pct:.1f}%) ➡️"
+    elif pct > -15:
+        return f"decreased moderately ({pct:.1f}%) ▼"
+    else:
+        return f"dropped significantly ({pct:.1f}%) 🔻"
+
 def main():
     st.set_page_config(page_title="Advanced SEPS", layout="wide", page_icon="⚡")
     
-    # Theme toggle
-    if "dark_mode" not in st.session_state:
-        st.session_state.dark_mode = False
+    st.title("⚡ Advanced Smart Energy Prediction System (SEPS)")
 
-    def toggle_theme():
-        st.session_state.dark_mode = not st.session_state.dark_mode
-
+    # Sidebar inputs
     st.sidebar.title("⚙️ Settings")
-    st.sidebar.button("Toggle Light/Dark Theme", on_click=toggle_theme)
-    theme = "dark" if st.session_state.dark_mode else "light"
-    st.markdown(f"<style>body {{background-color: {'#0E1117' if theme=='dark' else 'white'}; color: {'white' if theme=='dark' else 'black'};}}</style>", unsafe_allow_html=True)
 
-    st.sidebar.markdown("### LSTM Model Parameters")
     lstm_layers = st.sidebar.slider("LSTM Layers", 1, 4, 2)
     lstm_units = st.sidebar.slider("Units per Layer", 16, 256, 64, step=16)
     epochs = st.sidebar.slider("Training Epochs", 5, 50, 20)
     batch_size = st.sidebar.selectbox("Batch Size", [8, 16, 32, 64], index=1)
     
-    st.sidebar.markdown("### Forecast Settings")
     future_days = st.sidebar.slider("Days to Forecast", 7, 60, 30)
 
-    st.sidebar.markdown("### Cost Settings (₹ per Amp)")
     cost_light = st.sidebar.number_input("Light cost per Amp", min_value=0.0, value=2.0)
     cost_fan = st.sidebar.number_input("Fan cost per Amp", min_value=0.0, value=1.5)
     cost_iron = st.sidebar.number_input("Iron cost per Amp", min_value=0.0, value=3.0)
     cost_per_amp = {'light': cost_light, 'fan': cost_fan, 'iron': cost_iron}
 
-    st.title("⚡ Advanced Smart Energy Prediction System (SEPS)")
-
+    # Fetch data button
     if st.button("Fetch & Refresh Data"):
         st.session_state.df_original = fetch_data()
         st.success("Data refreshed!")
@@ -197,82 +198,72 @@ def main():
     st.subheader("Historical Data Preview")
     st.dataframe(df_original.tail(15))
 
-    # Normalize & Prepare
-    df_scaled, scaler = normalize_data(df_original)
+    # Normalize & prepare data
     seq_len = 10
-    X, y = prepare_sequences(df_scaled, seq_len=seq_len)
+    df_scaled, scaler = normalize_data(df_original)
 
+    if len(df_scaled) < seq_len + 1:
+        st.warning(f"Not enough data points to prepare sequences (need at least {seq_len+1}).")
+        return
+
+    X, y = prepare_sequences(df_scaled, seq_len)
+
+    # Train model
     if st.button("Train LSTM Model"):
-        with st.spinner("Training LSTM..."):
-            model = build_train_model(X, y, seq_len=seq_len,
-                                    lstm_units=lstm_units, layers=lstm_layers, epochs=epochs, batch_size=batch_size)
-        st.session_state.model = model
-        st.success("Training completed!")
+        with st.spinner("Training LSTM model..."):
+            model = build_train_model(X, y, seq_len, lstm_units, lstm_layers, epochs, batch_size)
+            st.session_state.model = model
+        st.success("Model training completed!")
 
     if "model" not in st.session_state:
-        st.info("Train the LSTM model to proceed.")
+        st.info("Train the model to make predictions.")
         return
 
     model = st.session_state.model
 
-    st.subheader("Next Day Prediction")
-    next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len=seq_len)
+    # Make next prediction
+    next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len)
 
-    # Safety check - ensure arrays length match expected appliance count (3)
-    if len(current_actual) != 3 or len(next_pred) != 3:
-        st.error("Prediction outputs shape mismatch! Expected 3 features (Light, Fan, Iron).")
-        st.write(f"current_actual shape: {current_actual.shape}, next_pred shape: {next_pred.shape}")
-        return
-
+    # Calculate % changes
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
 
-    pred_df = pd.DataFrame({
-        'Appliance': ['Light', 'Fan', 'Iron'],
-        'Current Usage (A)': np.round(current_actual[:3], 2).tolist(),
-        'Next Day Prediction (A)': np.round(next_pred[:3], 2).tolist(),
-        'Percentage Change (%)': [light_change, fan_change, iron_change]
-    })
+    st.subheader("Next Hour Prediction")
+    st.write(f"**Light:** {next_pred[0]:.3f} A, change {format_change(light_change)}")
+    st.write(f"**Fan:** {next_pred[1]:.3f} A, change {format_change(fan_change)}")
+    st.write(f"**Iron:** {next_pred[2]:.3f} A, change {format_change(iron_change)}")
 
-    st.table(pred_df)
+    # Forecast future usage
+    future_df = forecast_future(model, df_scaled, scaler, seq_len, future_days)
 
-    # Forecast Future
-    future_df = forecast_future(model, df_scaled, scaler, seq_len=seq_len, future_steps=future_days)
-    st.subheader(f"{future_days}-Day Forecast")
-
+    st.subheader(f"Forecast for Next {future_days} Days")
     plot_forecast_plotly(future_df, cost_per_amp)
 
-    # Anomaly Detection + Explanation
-    st.subheader("Anomaly Detection")
+    # Anomaly detection and explanation
     anomalies = detect_anomalies(df_original)
-    if anomalies.empty:
-        st.info("No anomalies detected.")
-    else:
-        st.write(f"Detected {len(anomalies)} anomalies:")
-        for idx, row in anomalies.iterrows():
-            with st.expander(f"Anomaly at {idx.strftime('%Y-%m-%d %H:%M:%S')}"):
-                st.write(row)
+    if not anomalies.empty:
+        st.subheader("Detected Anomalies")
+        st.dataframe(anomalies)
 
-        explanations = explain_anomalies(df_original, anomalies)
         st.subheader("Anomaly Explanations")
-        for date, reasons in explanations:
-            with st.expander(date):
+        explanations = explain_anomalies(df_original, anomalies)
+        for dt_str, reasons in explanations:
+            st.write(f"**{dt_str}**")
+            if reasons:
                 for r in reasons:
                     st.markdown(f"- {r}")
+            else:
+                st.write("- No clear reason found.")
 
-    # Upload to Firebase
+    else:
+        st.info("No anomalies detected.")
+
+    # Upload data to Firebase
     if st.button("Upload Forecast & Anomalies to Firebase"):
-        upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
-        st.success("Data uploaded to Firebase.")
-
-    # Export data options
-    st.subheader("Export Data")
-    csv_forecast = future_df.to_csv().encode('utf-8')
-    csv_anomalies = anomalies.to_csv().encode('utf-8')
-
-    st.download_button("Download Forecast CSV", csv_forecast, "forecast.csv", "text/csv")
-    st.download_button("Download Anomalies CSV", csv_anomalies, "anomalies.csv", "text/csv")
+        with st.spinner("Uploading data..."):
+            upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
+        st.success("Data uploaded successfully!")
 
 if __name__ == "__main__":
     main()
