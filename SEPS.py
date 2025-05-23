@@ -10,11 +10,12 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 # === Firebase Setup ===
-cred = credentials.Certificate("T:/serviceAccountKey.json")
+cred_dict = json.loads(st.secrets["firebase_key_json"])
+
+cred = credentials.Certificate(cred_dict)
 firebase_admin.initialize_app(cred, {
     'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
 })
-
 # === Fetch data from Firebase ===
 def fetch_data():
     readings_ref = db.reference('/readings')
