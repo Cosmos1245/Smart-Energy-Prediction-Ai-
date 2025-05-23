@@ -14,9 +14,7 @@ from datetime import datetime
 # --- Firebase Initialization ---
 def init_firebase():
     firebase_config = dict(st.secrets["firebase"])
-    # Fix private key newlines if needed
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
-    
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
@@ -39,7 +37,6 @@ def fetch_data():
     readings_filtered = {k: v for k, v in readings_raw.items() if is_valid_unix(k)}
     df = pd.DataFrame.from_dict(readings_filtered, orient='index')
     df.index = pd.to_datetime(df.index.astype(int), unit='s')
-
     columns = ['light', 'fan', 'iron']
     df = df[columns].apply(pd.to_numeric, errors='coerce')
     df.dropna(inplace=True)
@@ -112,15 +109,12 @@ def plot_forecast(future_df):
 
     fig, ax = plt.subplots(figsize=(14, 6))
     future_df[['light', 'fan', 'iron']].plot(ax=ax, marker='o', linewidth=2)
-
     ax.set_title('Forecasted Appliance Usage (Next 30 Days)', fontsize=16, weight='bold')
     ax.set_xlabel("Date", fontsize=12)
     ax.set_ylabel("Usage (Amps)", fontsize=12)
     ax.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
-
     y_max = future_df[['light', 'fan', 'iron']].values.max()
     ax.set_ylim(0, y_max * 1.1)
-
     plt.xticks(rotation=45)
     ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
     plt.tight_layout(rect=[0, 0, 0.85, 1])
@@ -136,7 +130,7 @@ def plot_forecast(future_df):
     plt.tight_layout()
     st.pyplot(fig2)
 
-# --- Weekly and Monthly Trends ---
+# --- Trends ---
 def plot_trends(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -146,8 +140,8 @@ def plot_trends(df_original):
     monthly_avg = df_original.groupby('month')[['light', 'fan', 'iron']].mean()
 
     COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
-    weekly_cost = (weekly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
-    monthly_cost = (monthly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+    weekly_cost = (weekly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+    monthly_cost = (monthly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
 
     fig, axs = plt.subplots(2, 2, figsize=(14, 8))
     weekly_avg.plot(ax=axs[0,0], title='Weekly Averages', marker='o')
@@ -167,11 +161,11 @@ def detect_anomalies(df_original):
     ].dropna()
     return anomalies
 
-# --- Appliance Efficiency Score ---
+# --- Efficiency ---
 def compute_efficiency(df_original):
     return (1 / (1 + df_original[['light', 'fan', 'iron']].var())) * 100
 
-# --- Seasonal Usage Pattern ---
+# --- Seasonal Usage ---
 def plot_seasonal_usage(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -187,7 +181,7 @@ def plot_seasonal_usage(df_original):
     ax.set_ylabel("Average Readings")
     st.pyplot(fig)
 
-# --- Upload Forecast to Firebase ---
+# --- Upload to Firebase ---
 def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies):
     forecast_ref = db.reference('/forecast')
     next_cost = (
@@ -211,24 +205,14 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
 # --- Main ---
 def main():
     st.title("Smart Energy Prediction System (SEPS)")
-
-    # Initialize Firebase
     init_firebase()
-
-    # Load data from Firebase
     with st.spinner("Fetching data from Firebase..."):
         df = fetch_data()
     st.write("### Recent Energy Usage Data", df.tail(10))
-
-    # Normalize and prepare sequences
     df_scaled, scaler = normalize_data(df)
     seq_len = 10
     X, y = prepare_sequences(df_scaled, seq_len)
-
-    # Train LSTM model
     model = build_train_model(X, y, seq_len)
-
-    # Predict next reading
     next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len)
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
@@ -239,26 +223,22 @@ def main():
     st.write(f"Fan: {next_pred[1]:.3f} (Change: {fan_change:.2f}%)")
     st.write(f"Iron: {next_pred[2]:.3f} (Change: {iron_change:.2f}%)")
 
-    # Forecast 30 days future
     future_df = forecast_future(model, df_scaled, scaler, seq_len, future_steps=30)
+    st.write("### Forecasted Cost (Next 30 Days)")
+    total_cost = future_df['cost'].sum()
+    avg_daily_cost = future_df['cost'].mean()
+    st.write(f"**Total Cost**: ₹{total_cost:.2f}")
+    st.write(f"**Average Daily Cost**: ₹{avg_daily_cost:.2f}")
+    st.write("#### Daily Forecasted Cost Table")
+    st.dataframe(future_df[['cost']].round(2))
     plot_forecast(future_df)
-
-    # Plot weekly/monthly trends
     plot_trends(df)
-
-    # Detect anomalies and show
     anomalies = detect_anomalies(df)
     st.write("### Detected Anomalies")
     st.write(anomalies if not anomalies.empty else "No anomalies detected")
-
-    # Show appliance efficiency
     efficiency_score = compute_efficiency(df)
     st.write(f"### Appliance Efficiency Score: {efficiency_score.mean():.2f}")
-
-    # Show seasonal usage
     plot_seasonal_usage(df)
-
-    # Upload forecast & metrics back to Firebase
     upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
     st.success("✅ Forecast and analytics uploaded to Firebase")
 
