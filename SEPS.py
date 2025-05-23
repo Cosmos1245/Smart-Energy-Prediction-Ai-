@@ -12,21 +12,17 @@ from datetime import datetime
 
 # === Firebase Setup using Streamlit secrets ===
 def init_firebase():
-    # Make a copy of the secrets dictionary so we can safely modify it
     firebase_config = dict(st.secrets["firebase"])  
-    # Fix the private_key formatting by replacing escaped newlines with real newlines
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
     
     cred = credentials.Certificate(firebase_config)
     
-    # Prevent reinitialization error if Firebase app is already initialized
     try:
         firebase_admin.get_app()
     except ValueError:
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
         })
-
 
 init_firebase()
 
@@ -41,7 +37,7 @@ def fetch_data():
     def is_valid_unix(key):
         try:
             ts = int(key)
-            return 1577836800 <= ts <= 2082758400  # roughly 2020 to 2036
+            return 1577836800 <= ts <= 2082758400
         except:
             return False
 
@@ -112,7 +108,7 @@ def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     )
     return future_df
 
-# === Plot forecasted usage and cost ===
+# === Plot forecasted usage and cost with Streamlit ===
 def plot_forecast(future_df):
     future_dates = pd.date_range(start=datetime.now(), periods=len(future_df), freq='D')
     future_df.index = future_dates
@@ -133,7 +129,8 @@ def plot_forecast(future_df):
     plt.xticks(rotation=45)
     ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
     plt.tight_layout(rect=[0, 0, 0.85, 1])
-    plt.show()
+    st.pyplot(fig)
+    plt.close(fig)
 
     fig2, ax2 = plt.subplots(figsize=(12, 4))
     future_df['cost'].plot(ax=ax2, marker='x', color='crimson', linewidth=2)
@@ -143,9 +140,10 @@ def plot_forecast(future_df):
     ax2.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
     plt.xticks(rotation=45)
     plt.tight_layout()
-    plt.show()
+    st.pyplot(fig2)
+    plt.close(fig2)
 
-# === Weekly and Monthly Trends ===
+# === Weekly and Monthly Trends with Streamlit plots ===
 def plot_trends(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -158,17 +156,16 @@ def plot_trends(df_original):
     weekly_cost = (weekly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
     monthly_cost = (monthly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
 
-    plt.figure(figsize=(14, 8))
-    plt.subplot(2, 2, 1)
-    weekly_avg.plot(ax=plt.gca(), title='Weekly Averages', marker='o')
-    plt.subplot(2, 2, 2)
-    monthly_avg.plot(ax=plt.gca(), title='Monthly Averages', marker='o')
-    plt.subplot(2, 2, 3)
-    weekly_cost.plot(ax=plt.gca(), title='Weekly Cost (₹)', color='purple', marker='x')
-    plt.subplot(2, 2, 4)
-    monthly_cost.plot(ax=plt.gca(), title='Monthly Cost (₹)', color='green', marker='x')
+    fig, axs = plt.subplots(2, 2, figsize=(14, 8))
+
+    weekly_avg.plot(ax=axs[0, 0], title='Weekly Averages', marker='o')
+    monthly_avg.plot(ax=axs[0, 1], title='Monthly Averages', marker='o')
+    weekly_cost.plot(ax=axs[1, 0], title='Weekly Cost (₹)', color='purple', marker='x')
+    monthly_cost.plot(ax=axs[1, 1], title='Monthly Cost (₹)', color='green', marker='x')
+
     plt.tight_layout()
-    plt.show()
+    st.pyplot(fig)
+    plt.close(fig)
 
 # === Anomaly Detection ===
 def detect_anomalies(df_original):
@@ -184,7 +181,7 @@ def detect_anomalies(df_original):
 def compute_efficiency(df_original):
     return (1 / (1 + df_original[['light', 'fan', 'iron']].var())) * 100
 
-# === Seasonal Usage Pattern ===
+# === Seasonal Usage Pattern with Streamlit plot ===
 def plot_seasonal_usage(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
@@ -195,9 +192,12 @@ def plot_seasonal_usage(df_original):
         else 'Other'
     )
     seasonal_avg = df_original.groupby('season')[['light', 'fan', 'iron']].mean()
-    seasonal_avg.plot(kind='bar', title='Seasonal Appliance Usage')
-    plt.ylabel("Average Readings")
-    plt.show()
+
+    fig, ax = plt.subplots()
+    seasonal_avg.plot(kind='bar', ax=ax, title='Seasonal Appliance Usage')
+    ax.set_ylabel("Average Readings")
+    st.pyplot(fig)
+    plt.close(fig)
 
 # === Upload Forecast to Firebase ===
 def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies):
@@ -236,6 +236,8 @@ def format_change(pct):
 
 # === Main Execution ===
 def main():
+    st.title("Smart Energy Prediction System")
+
     df = fetch_data()
     if df.empty:
         st.error("No valid data to process.")
@@ -258,14 +260,22 @@ def main():
     )
 
     future_df = forecast_future(model, df_scaled, scaler)
+    
+    st.subheader("Forecasted Appliance Usage and Cost")
     plot_forecast(future_df)
+
+    st.subheader("Weekly and Monthly Usage Trends")
     plot_trends(df_original)
+
     anomalies = detect_anomalies(df_original)
     efficiency_score = compute_efficiency(df_original)
+
+    st.subheader("Seasonal Usage Pattern")
     plot_seasonal_usage(df_original)
+
     upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
 
-    summary = "\n🧾 FINAL REPORT\n\n🔮 Predicted Next Usage:\n"
+    summary = "🧾 **FINAL REPORT**\n\n🔮 **Predicted Next Usage:**\n"
     summary += f"  Light usage {format_change(light_change)}\n"
     summary += f"  Fan usage {format_change(fan_change)}\n"
     summary += f"  Iron usage {format_change(iron_change)}\n"
@@ -281,7 +291,7 @@ def main():
     for device, score in efficiency_score.items():
         summary += f"  {device.capitalize()}: {score:.1f}\n"
 
-    print(summary)
+    st.text(summary)
 
 if __name__ == "__main__":
     main()
