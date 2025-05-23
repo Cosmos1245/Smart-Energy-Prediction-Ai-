@@ -9,14 +9,14 @@ import firebase_admin
 from firebase_admin import credentials, db
 import matplotlib.pyplot as plt
 from datetime import datetime
+import io
+from fpdf import FPDF
 
-# === Firebase Setup using Streamlit secrets ===
+# === Firebase Setup ===
 def init_firebase():
-    firebase_config = dict(st.secrets["firebase"])  
+    firebase_config = dict(st.secrets["firebase"])
     firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
-    
     cred = credentials.Certificate(firebase_config)
-    
     try:
         firebase_admin.get_app()
     except ValueError:
@@ -26,7 +26,7 @@ def init_firebase():
 
 init_firebase()
 
-# === Fetch data from Firebase ===
+# === Fetch Data ===
 def fetch_data():
     readings_ref = db.reference('/readings')
     readings_raw = readings_ref.get()
@@ -50,7 +50,7 @@ def fetch_data():
     df.dropna(inplace=True)
     return df
 
-# === Normalize data ===
+# === Normalize ===
 def normalize_data(df):
     scaler = MinMaxScaler()
     df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns, index=df.index)
@@ -64,7 +64,7 @@ def prepare_sequences(df_scaled, seq_len=10):
         y.append(df_scaled.iloc[i+seq_len].values)
     return np.array(X), np.array(y)
 
-# === Build and train LSTM model ===
+# === Build and train model ===
 def build_train_model(X, y, seq_len=10):
     model = Sequential([
         tf.keras.Input(shape=(seq_len, 3)),
@@ -73,13 +73,13 @@ def build_train_model(X, y, seq_len=10):
         Dense(3)
     ])
     model.compile(optimizer='adam', loss='mse')
-    model.fit(X, y, epochs=20, batch_size=16, verbose=1)
+    model.fit(X, y, epochs=20, batch_size=16, verbose=0)  # silent for Streamlit
     return model
 
-# === Predict next step ===
+# === Predict next usage ===
 def predict_next(model, df_scaled, scaler, seq_len=10):
     next_input = np.array([df_scaled.iloc[-seq_len:].values])
-    next_scaled = model.predict(next_input)
+    next_scaled = model.predict(next_input, verbose=0)
     next_pred = scaler.inverse_transform(next_scaled)[0]
     current_actual = scaler.inverse_transform([df_scaled.iloc[-1].values])[0]
     return next_pred, current_actual
@@ -88,18 +88,17 @@ def predict_next(model, df_scaled, scaler, seq_len=10):
 def pct_change(now, future):
     return ((future - now) / now * 100) if now else 0
 
-# === 30-Day Forecast ===
+# === Forecast future ===
 def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     future_preds = []
     input_seq = df_scaled.iloc[-seq_len:].values.copy()
     for _ in range(future_steps):
         input_array = np.array([input_seq])
-        next_scaled = model.predict(input_array)[0]
+        next_scaled = model.predict(input_array, verbose=0)[0]
         future_preds.append(next_scaled)
         input_seq = np.vstack([input_seq[1:], next_scaled])
     future_preds_inv = scaler.inverse_transform(future_preds)
     future_df = pd.DataFrame(future_preds_inv, columns=df_scaled.columns)
-
     COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
     future_df['cost'] = (
         future_df['light'] * COST_PER_AMP_HOUR['light'] +
@@ -108,64 +107,54 @@ def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     )
     return future_df
 
-# === Plot forecasted usage and cost with Streamlit ===
+# === Plot forecast ===
 def plot_forecast(future_df):
     future_dates = pd.date_range(start=datetime.now(), periods=len(future_df), freq='D')
     future_df.index = future_dates
-
     plt.style.use('seaborn-v0_8-darkgrid')
-
     fig, ax = plt.subplots(figsize=(14, 6))
     future_df[['light', 'fan', 'iron']].plot(ax=ax, marker='o', linewidth=2)
-
-    ax.set_title('Forecasted Appliance Usage (Next 30 Days)', fontsize=16, weight='bold')
+    ax.set_title('Forecasted Appliance Usage (Next Days)', fontsize=16, weight='bold')
     ax.set_xlabel("Date", fontsize=12)
     ax.set_ylabel("Usage (Amps)", fontsize=12)
     ax.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
-
     y_max = future_df[['light', 'fan', 'iron']].values.max()
     ax.set_ylim(0, y_max * 1.1)
-
     plt.xticks(rotation=45)
     ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
     plt.tight_layout(rect=[0, 0, 0.85, 1])
     st.pyplot(fig)
-    plt.close(fig)
 
     fig2, ax2 = plt.subplots(figsize=(12, 4))
     future_df['cost'].plot(ax=ax2, marker='x', color='crimson', linewidth=2)
-    ax2.set_title('Forecasted Cost (Next 30 Days)', fontsize=16, weight='bold')
+    ax2.set_title('Forecasted Cost (Next Days)', fontsize=16, weight='bold')
     ax2.set_xlabel("Date", fontsize=12)
     ax2.set_ylabel("Cost (₹)", fontsize=12)
     ax2.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
     plt.xticks(rotation=45)
     plt.tight_layout()
     st.pyplot(fig2)
-    plt.close(fig2)
 
-# === Weekly and Monthly Trends with Streamlit plots ===
+# === Weekly & Monthly Trends ===
 def plot_trends(df_original):
-    df_original = df_original.copy()
-    df_original.index = pd.to_datetime(df_original.index)
-    df_original['week'] = df_original.index.isocalendar().week
-    df_original['month'] = df_original.index.month
-    weekly_avg = df_original.groupby('week')[['light', 'fan', 'iron']].mean()
-    monthly_avg = df_original.groupby('month')[['light', 'fan', 'iron']].mean()
+    df = df_original.copy()
+    df.index = pd.to_datetime(df.index)
+    df['week'] = df.index.isocalendar().week
+    df['month'] = df.index.month
+    weekly_avg = df.groupby('week')[['light', 'fan', 'iron']].mean()
+    monthly_avg = df.groupby('month')[['light', 'fan', 'iron']].mean()
 
     COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
-    weekly_cost = (weekly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
-    monthly_cost = (monthly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+    weekly_cost = (weekly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+    monthly_cost = (monthly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
 
     fig, axs = plt.subplots(2, 2, figsize=(14, 8))
-
-    weekly_avg.plot(ax=axs[0, 0], title='Weekly Averages', marker='o')
-    monthly_avg.plot(ax=axs[0, 1], title='Monthly Averages', marker='o')
-    weekly_cost.plot(ax=axs[1, 0], title='Weekly Cost (₹)', color='purple', marker='x')
-    monthly_cost.plot(ax=axs[1, 1], title='Monthly Cost (₹)', color='green', marker='x')
-
+    weekly_avg.plot(ax=axs[0,0], title='Weekly Averages', marker='o')
+    monthly_avg.plot(ax=axs[0,1], title='Monthly Averages', marker='o')
+    weekly_cost.plot(ax=axs[1,0], title='Weekly Cost (₹)', color='purple', marker='x')
+    monthly_cost.plot(ax=axs[1,1], title='Monthly Cost (₹)', color='green', marker='x')
     plt.tight_layout()
     st.pyplot(fig)
-    plt.close(fig)
 
 # === Anomaly Detection ===
 def detect_anomalies(df_original):
@@ -177,29 +166,39 @@ def detect_anomalies(df_original):
     ].dropna()
     return anomalies
 
-# === Appliance Efficiency Score ===
+# === Explain anomalies ===
+def explain_anomalies(df_original, anomalies):
+    explanations = []
+    for idx, row in anomalies.iterrows():
+        seasonal_avg = df_original[df_original.index.month == idx.month][['light', 'fan', 'iron']].mean()
+        reasons = []
+        for device in ['light', 'fan', 'iron']:
+            if abs(row[device] - seasonal_avg[device]) > seasonal_avg[device] * 0.5:
+                reasons.append(f"{device.capitalize()} usage unusually high/low compared to seasonal average.")
+        explanations.append((idx.strftime("%Y-%m-%d %H:%M:%S"), reasons))
+    return explanations
+
+# === Efficiency Score ===
 def compute_efficiency(df_original):
     return (1 / (1 + df_original[['light', 'fan', 'iron']].var())) * 100
 
-# === Seasonal Usage Pattern with Streamlit plot ===
+# === Seasonal Usage ===
 def plot_seasonal_usage(df_original):
-    df_original = df_original.copy()
-    df_original.index = pd.to_datetime(df_original.index)
-    df_original['month'] = df_original.index.month
-    df_original['season'] = df_original['month'].apply(
+    df = df_original.copy()
+    df.index = pd.to_datetime(df.index)
+    df['month'] = df.index.month
+    df['season'] = df['month'].apply(
         lambda x: 'Winter' if x in [12, 1, 2]
         else 'Summer' if x in [5, 6, 7]
         else 'Other'
     )
-    seasonal_avg = df_original.groupby('season')[['light', 'fan', 'iron']].mean()
-
+    seasonal_avg = df.groupby('season')[['light', 'fan', 'iron']].mean()
     fig, ax = plt.subplots()
     seasonal_avg.plot(kind='bar', ax=ax, title='Seasonal Appliance Usage')
     ax.set_ylabel("Average Readings")
     st.pyplot(fig)
-    plt.close(fig)
 
-# === Upload Forecast to Firebase ===
+# === Upload forecast to Firebase ===
 def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies):
     forecast_ref = db.reference('/forecast')
     next_cost = (
@@ -215,83 +214,119 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
         'next_fan_change': float(fan_change),
         'next_iron_change': float(iron_change),
         'next_usage_cost': float(next_cost),
-        'forecast_days': future_df.to_dict(orient='records')
+        'timestamp': int(datetime.now().timestamp()),
+        'future_forecast': future_df.to_dict(orient='records'),
+        'anomalies': anomalies.to_dict(orient='records'),
     })
-    if not anomalies.empty:
-        db.reference('/anomalies').set(anomalies.tail(5).to_dict())
-    print("\n✅ Forecast uploaded to Firebase.")
 
-# === Helper for human-readable % change ===
-def format_change(pct):
-    if pct > 15:
-        return f"increased significantly (+{pct:.1f}%) 🔺"
-    elif pct > 5:
-        return f"increased moderately (+{pct:.1f}%) ▲"
-    elif pct > -5:
-        return f"is stable ({pct:.1f}%) ➡️"
-    elif pct > -15:
-        return f"decreased moderately ({pct:.1f}%) ▼"
-    else:
-        return f"dropped significantly ({pct:.1f}%) 🔻"
+# === Advanced Export (Excel + PDF Summary) ===
+def export_reports(future_df, anomalies, explanation_text):
+    # Excel Export
+    excel_buffer = io.BytesIO()
+    with pd.ExcelWriter(excel_buffer, engine='xlsxwriter') as writer:
+        future_df.to_excel(writer, sheet_name='Forecast')
+        anomalies.to_excel(writer, sheet_name='Anomalies')
+        workbook = writer.book
+        worksheet = writer.sheets['Forecast']
 
-# === Main Execution ===
+        chart = workbook.add_chart({'type': 'line'})
+        max_row = len(future_df) + 1
+        for i, col in enumerate(['light', 'fan', 'iron']):
+            chart.add_series({
+                'name':       ['Forecast', 0, i + 1],
+                'categories': ['Forecast', 1, 0, max_row, 0],
+                'values':     ['Forecast', 1, i + 1, max_row, i + 1],
+                'line':       {'width': 1.5},
+            })
+        chart.set_title({'name': 'Forecasted Appliance Usage'})
+        worksheet.insert_chart('H2', chart)
+
+    # PDF summary report
+    pdf = FPDF()
+    pdf.add_page()
+    pdf.set_font("Arial", size=12)
+    pdf.cell(0, 10, "Smart Energy Prediction System - Summary Report", ln=True, align='C')
+    pdf.ln(5)
+    for line in explanation_text.split('\n'):
+        pdf.multi_cell(0, 10, line)
+    pdf_output = io.BytesIO()
+    pdf.output(pdf_output)
+    pdf_output.seek(0)
+
+    # Streamlit download buttons
+    st.download_button("Download Forecast Excel", excel_buffer.getvalue(), file_name="energy_forecast.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+    st.download_button("Download Summary Report (PDF)", pdf_output.getvalue(), file_name="energy_summary.pdf", mime="application/pdf")
+
+# === Main Streamlit App ===
 def main():
-    st.title("Smart Energy Prediction System")
+    st.title("🚀 Advanced Smart Energy Prediction System")
 
-    df = fetch_data()
-    if df.empty:
-        st.error("No valid data to process.")
+    df_original = fetch_data()
+    if df_original.empty:
+        st.warning("Waiting for valid data...")
         return
 
-    df_original = df.copy()
-    df_scaled, scaler = normalize_data(df)
-    X, y = prepare_sequences(df_scaled)
-    model = build_train_model(X, y)
-    next_pred, current_actual = predict_next(model, df_scaled, scaler)
+    st.subheader("Historical Data Preview")
+    st.dataframe(df_original.tail(10))
+
+    st.subheader("User Settings")
+    future_days = st.slider("Days to Forecast", 7, 60, 30)
+
+    df_scaled, scaler = normalize_data(df_original)
+    seq_len = 10
+    X, y = prepare_sequences(df_scaled, seq_len=seq_len)
+
+    st.text("Training LSTM model (this may take a moment)...")
+    model = build_train_model(X, y, seq_len=seq_len)
+    st.success("Model training complete!")
+
+    next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len=seq_len)
+
+    st.subheader("Next Day Prediction")
+    st.write(f"Predicted usage - Light: {next_pred[0]:.2f} A, Fan: {next_pred[1]:.2f} A, Iron: {next_pred[2]:.2f} A")
+    st.write(f"Current usage - Light: {current_actual[0]:.2f} A, Fan: {current_actual[1]:.2f} A, Iron: {current_actual[2]:.2f} A")
 
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
 
-    next_cost = (
-        next_pred[0] * 2 +
-        next_pred[1] * 1.5 +
-        next_pred[2] * 3
-    )
+    st.write(f"Percentage change - Light: {light_change:+.2f}%, Fan: {fan_change:+.2f}%, Iron: {iron_change:+.2f}%")
 
-    future_df = forecast_future(model, df_scaled, scaler)
-    
-    st.subheader("Forecasted Appliance Usage and Cost")
+    future_df = forecast_future(model, df_scaled, scaler, seq_len=seq_len, future_steps=future_days)
+    st.subheader(f"{future_days}-Day Forecast")
     plot_forecast(future_df)
 
-    st.subheader("Weekly and Monthly Usage Trends")
+    st.subheader("Weekly & Monthly Trends")
     plot_trends(df_original)
 
     anomalies = detect_anomalies(df_original)
-    efficiency_score = compute_efficiency(df_original)
+    st.subheader("Detected Anomalies")
+    if anomalies.empty:
+        st.write("No anomalies detected.")
+    else:
+        st.dataframe(anomalies)
 
-    st.subheader("Seasonal Usage Pattern")
+    explanations = explain_anomalies(df_original, anomalies)
+    explanation_text = "Anomaly Explanations:\n"
+    for date, reasons in explanations:
+        explanation_text += f"\n{date}:\n"
+        for r in reasons:
+            explanation_text += f" - {r}\n"
+    st.text_area("Anomaly Explanations", explanation_text, height=200)
+
+    st.subheader("Seasonal Appliance Usage")
     plot_seasonal_usage(df_original)
 
-    upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
+    efficiency = compute_efficiency(df_original)
+    st.subheader("Efficiency Score (Lower variance = higher score)")
+    st.write(efficiency.round(2))
 
-    summary = "🧾 **FINAL REPORT**\n\n🔮 **Predicted Next Usage:**\n"
-    summary += f"  Light usage {format_change(light_change)}\n"
-    summary += f"  Fan usage {format_change(fan_change)}\n"
-    summary += f"  Iron usage {format_change(iron_change)}\n"
-    summary += f"\n💰 Estimated Cost of Next Usage: ₹{next_cost:.2f}\n"
+    if st.button("Upload Forecast and Anomalies to Firebase"):
+        upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
+        st.success("Uploaded forecast and anomalies to Firebase!")
 
-    if not anomalies.empty:
-        summary += "\n⚠️ Anomalies Detected (latest 5 readings):\n"
-        summary += anomalies[['light', 'fan', 'iron']].tail().to_string() + "\n"
-    else:
-        summary += "\n✅ No significant anomalies detected.\n"
-
-    summary += "\n⚙️ Appliance Efficiency Scores (0–100):\n"
-    for device, score in efficiency_score.items():
-        summary += f"  {device.capitalize()}: {score:.1f}\n"
-
-    st.text(summary)
+    st.subheader("Export Reports")
+    export_reports(future_df, anomalies, explanation_text)
 
 if __name__ == "__main__":
     main()
