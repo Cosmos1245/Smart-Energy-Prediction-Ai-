@@ -1,4 +1,3 @@
-import streamlit as st
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -7,108 +6,179 @@ from tensorflow.keras.layers import LSTM, Dense
 from sklearn.preprocessing import MinMaxScaler
 import firebase_admin
 from firebase_admin import credentials, db
-import plotly.express as px
-import plotly.graph_objects as go
+import matplotlib.pyplot as plt
 from datetime import datetime
 
-# Firebase initialization function
-def init_firebase():
-    firebase_config = dict(st.secrets["firebase"])
-    firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
-    cred = credentials.Certificate(firebase_config)
-    try:
-        firebase_admin.get_app()
-    except ValueError:
-        firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
-        })
+# === Firebase Setup ===
+cred = credentials.Certificate("T:/serviceAccountKey.json")
+firebase_admin.initialize_app(cred, {
+    'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
+})
 
-init_firebase()
-
+# === Fetch data from Firebase ===
 def fetch_data():
     readings_ref = db.reference('/readings')
     readings_raw = readings_ref.get()
-    if readings_raw is None:
-        return pd.DataFrame()
+
     def is_valid_unix(key):
         try:
             ts = int(key)
             return 1577836800 <= ts <= 2082758400
         except:
             return False
+
     readings_filtered = {k: v for k, v in readings_raw.items() if is_valid_unix(k)}
+
+    # Convert to DataFrame
     df = pd.DataFrame.from_dict(readings_filtered, orient='index')
+
+    # Convert index to datetime
     df.index = pd.to_datetime(df.index.astype(int), unit='s')
-    df = df.apply(pd.to_numeric, errors='coerce').dropna()
+
+    # Keep ONLY required columns: light, fan, iron
+    columns = ['light', 'fan', 'iron']
+    df = df[columns].apply(pd.to_numeric, errors='coerce')
+    df.dropna(inplace=True)
+
+    # Debug prints
+    print(f"Data shape after filtering: {df.shape}")
+    print(f"Data columns: {df.columns.tolist()}")
+
+    # Make sure exactly 3 columns
+    assert df.shape[1] == 3, "Dataframe must have exactly 3 columns: light, fan, iron"
+
     return df
 
+# === Normalize data ===
 def normalize_data(df):
     scaler = MinMaxScaler()
     df_scaled = pd.DataFrame(scaler.fit_transform(df), columns=df.columns, index=df.index)
     return df_scaled, scaler
 
+# === Prepare sequences ===
 def prepare_sequences(df_scaled, seq_len=10):
     X, y = [], []
     for i in range(len(df_scaled) - seq_len):
         X.append(df_scaled.iloc[i:i+seq_len].values)
         y.append(df_scaled.iloc[i+seq_len].values)
-    return np.array(X), np.array(y)
+    X = np.array(X)
+    y = np.array(y)
 
-def build_train_model(X, y, seq_len=10, lstm_units=64, layers=2, epochs=20, batch_size=16):
-    model = Sequential()
-    model.add(tf.keras.Input(shape=(seq_len, X.shape[2])))
-    for i in range(layers - 1):
-        model.add(LSTM(lstm_units, return_sequences=True))
-    model.add(LSTM(lstm_units))
-    model.add(Dense(X.shape[2]))
+    # Debug print shapes
+    print(f"Prepared sequences shapes - X: {X.shape}, y: {y.shape}")
+
+    assert X.shape[2] == 3, "X must have 3 features"
+    assert y.shape[1] == 3, "y must have 3 features"
+
+    return X, y
+
+# === Build and train LSTM model ===
+def build_train_model(X, y, seq_len=10):
+    model = Sequential([
+        tf.keras.Input(shape=(seq_len, 3)),
+        LSTM(64, return_sequences=True),
+        LSTM(64),
+        Dense(3)
+    ])
     model.compile(optimizer='adam', loss='mse')
-    progress_bar = st.progress(0)
-    for epoch in range(epochs):
-        model.fit(X, y, epochs=1, batch_size=batch_size, verbose=0)
-        progress_bar.progress((epoch + 1) / epochs)
-    progress_bar.empty()
+    model.fit(X, y, epochs=20, batch_size=16, verbose=1)
     return model
 
+# === Predict next step ===
 def predict_next(model, df_scaled, scaler, seq_len=10):
-    next_input = np.array([df_scaled.iloc[-seq_len:].values])
-    next_scaled = model.predict(next_input, verbose=0)
-    next_pred = scaler.inverse_transform(next_scaled)[0]
-    current_actual = scaler.inverse_transform([df_scaled.iloc[-1].values])[0]
+    next_input = np.array([df_scaled.iloc[-seq_len:].values])  # shape (1, seq_len, 3)
+    next_scaled = model.predict(next_input)  # shape (1, 3)
+    next_pred = scaler.inverse_transform(next_scaled)[0]  # shape (3,)
+    current_actual = scaler.inverse_transform([df_scaled.iloc[-1].values])[0]  # shape (3,)
+
+    # Debug prints
+    print(f"next_pred shape: {next_pred.shape}, current_actual shape: {current_actual.shape}")
+
     return next_pred, current_actual
 
+# === % Change Calculation ===
 def pct_change(now, future):
     return ((future - now) / now * 100) if now else 0
 
+# === 30-Day Forecast ===
 def forecast_future(model, df_scaled, scaler, seq_len=10, future_steps=30):
     future_preds = []
     input_seq = df_scaled.iloc[-seq_len:].values.copy()
     for _ in range(future_steps):
         input_array = np.array([input_seq])
-        next_scaled = model.predict(input_array, verbose=0)[0]
+        next_scaled = model.predict(input_array)[0]
         future_preds.append(next_scaled)
         input_seq = np.vstack([input_seq[1:], next_scaled])
     future_preds_inv = scaler.inverse_transform(future_preds)
     future_df = pd.DataFrame(future_preds_inv, columns=df_scaled.columns)
+
+    COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
+    future_df['cost'] = (
+        future_df['light'] * COST_PER_AMP_HOUR['light'] +
+        future_df['fan'] * COST_PER_AMP_HOUR['fan'] +
+        future_df['iron'] * COST_PER_AMP_HOUR['iron']
+    )
     return future_df
 
-def plot_forecast_plotly(future_df, cost_per_amp):
+# === Plot forecasted usage and cost ===
+def plot_forecast(future_df):
     future_dates = pd.date_range(start=datetime.now(), periods=len(future_df), freq='D')
     future_df.index = future_dates
-    future_df['cost'] = (
-        future_df['light'] * cost_per_amp['light'] +
-        future_df['fan'] * cost_per_amp['fan'] +
-        future_df['iron'] * cost_per_amp['iron']
-    )
-    fig = go.Figure()
-    for device in ['light', 'fan', 'iron']:
-        fig.add_trace(go.Scatter(x=future_df.index, y=future_df[device],
-                                 mode='lines+markers', name=device.capitalize()))
-    fig.update_layout(title="Forecasted Appliance Usage", xaxis_title="Date", yaxis_title="Usage (Amps)")
-    st.plotly_chart(fig, use_container_width=True)
 
-    fig_cost = px.line(future_df, y='cost', title="Forecasted Cost (₹) over Days")
-    st.plotly_chart(fig_cost, use_container_width=True)
+    plt.style.use('seaborn-v0_8-darkgrid')
 
+    fig, ax = plt.subplots(figsize=(14, 6))
+    future_df[['light', 'fan', 'iron']].plot(ax=ax, marker='o', linewidth=2)
+
+    ax.set_title('Forecasted Appliance Usage (Next 30 Days)', fontsize=16, weight='bold')
+    ax.set_xlabel("Date", fontsize=12)
+    ax.set_ylabel("Usage (Amps)", fontsize=12)
+    ax.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
+
+    y_max = future_df[['light', 'fan', 'iron']].values.max()
+    ax.set_ylim(0, y_max * 1.1)
+
+    plt.xticks(rotation=45)
+    ax.legend(loc='center left', bbox_to_anchor=(1.0, 0.5))
+    plt.tight_layout(rect=[0, 0, 0.85, 1])
+    plt.show()
+
+    fig2, ax2 = plt.subplots(figsize=(12, 4))
+    future_df['cost'].plot(ax=ax2, marker='x', color='crimson', linewidth=2)
+    ax2.set_title('Forecasted Cost (Next 30 Days)', fontsize=16, weight='bold')
+    ax2.set_xlabel("Date", fontsize=12)
+    ax2.set_ylabel("Cost (₹)", fontsize=12)
+    ax2.grid(which='both', linestyle='--', linewidth=0.7, alpha=0.7)
+    plt.xticks(rotation=45)
+    plt.tight_layout()
+    plt.show()
+
+# === Weekly and Monthly Trends ===
+def plot_trends(df_original):
+    df_original = df_original.copy()
+    df_original.index = pd.to_datetime(df_original.index)
+    df_original['week'] = df_original.index.isocalendar().week
+    df_original['month'] = df_original.index.month
+    weekly_avg = df_original.groupby('week')[['light', 'fan', 'iron']].mean()
+    monthly_avg = df_original.groupby('month')[['light', 'fan', 'iron']].mean()
+
+    COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
+    weekly_cost = (weekly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+    monthly_cost = (monthly_avg[['light', 'fan', 'iron']] * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+
+    plt.figure(figsize=(14, 8))
+    plt.subplot(2, 2, 1)
+    weekly_avg.plot(ax=plt.gca(), title='Weekly Averages', marker='o')
+    plt.subplot(2, 2, 2)
+    monthly_avg.plot(ax=plt.gca(), title='Monthly Averages', marker='o')
+    plt.subplot(2, 2, 3)
+    weekly_cost.plot(ax=plt.gca(), title='Weekly Cost (₹)', color='purple', marker='x')
+    plt.subplot(2, 2, 4)
+    monthly_cost.plot(ax=plt.gca(), title='Monthly Cost (₹)', color='green', marker='x')
+    plt.tight_layout()
+    plt.show()
+
+# === Anomaly Detection ===
 def detect_anomalies(df_original):
     rolling_mean = df_original[['light', 'fan', 'iron']].rolling(window=12).mean()
     rolling_std = df_original[['light', 'fan', 'iron']].rolling(window=12).std()
@@ -118,17 +188,26 @@ def detect_anomalies(df_original):
     ].dropna()
     return anomalies
 
-def explain_anomalies(df_original, anomalies):
-    explanations = []
-    for idx, row in anomalies.iterrows():
-        seasonal_avg = df_original[df_original.index.month == idx.month][['light', 'fan', 'iron']].mean()
-        reasons = []
-        for device in ['light', 'fan', 'iron']:
-            if abs(row[device] - seasonal_avg[device]) > seasonal_avg[device] * 0.5:
-                reasons.append(f"{device.capitalize()} usage unusually high/low compared to seasonal average.")
-        explanations.append((idx.strftime("%Y-%m-%d %H:%M:%S"), reasons))
-    return explanations
+# === Appliance Efficiency Score ===
+def compute_efficiency(df_original):
+    return (1 / (1 + df_original[['light', 'fan', 'iron']].var())) * 100
 
+# === Seasonal Usage Pattern ===
+def plot_seasonal_usage(df_original):
+    df_original = df_original.copy()
+    df_original.index = pd.to_datetime(df_original.index)
+    df_original['month'] = df_original.index.month
+    df_original['season'] = df_original['month'].apply(
+        lambda x: 'Winter' if x in [12, 1, 2]
+        else 'Summer' if x in [5, 6, 7]
+        else 'Other'
+    )
+    seasonal_avg = df_original.groupby('season')[['light', 'fan', 'iron']].mean()
+    seasonal_avg.plot(kind='bar', title='Seasonal Appliance Usage')
+    plt.ylabel("Average Readings")
+    plt.show()
+
+# === Upload Forecast to Firebase ===
 def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies):
     forecast_ref = db.reference('/forecast')
     next_cost = (
@@ -144,11 +223,13 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
         'next_fan_change': float(fan_change),
         'next_iron_change': float(iron_change),
         'next_usage_cost': float(next_cost),
-        'timestamp': int(datetime.now().timestamp()),
-        'future_forecast': future_df.to_dict(orient='records'),
-        'anomalies': anomalies.to_dict(orient='records'),
+        'forecast_days': future_df.to_dict(orient='records')
     })
+    if not anomalies.empty:
+        db.reference('/anomalies').set(anomalies.tail(5).to_dict())
+    print("\n✅ Forecast uploaded to Firebase.")
 
+# === Helper for human-readable % change ===
 def format_change(pct):
     if pct > 15:
         return f"increased significantly (+{pct:.1f}%) 🔺"
@@ -161,109 +242,50 @@ def format_change(pct):
     else:
         return f"dropped significantly ({pct:.1f}%) 🔻"
 
+# === Main Execution ===
 def main():
-    st.set_page_config(page_title="Advanced SEPS", layout="wide", page_icon="⚡")
-    
-    st.title("⚡ Advanced Smart Energy Prediction System (SEPS)")
+    df = fetch_data()
+    df_original = df.copy()
+    df_scaled, scaler = normalize_data(df)
+    X, y = prepare_sequences(df_scaled)
+    model = build_train_model(X, y)
+    next_pred, current_actual = predict_next(model, df_scaled, scaler)
 
-    # Sidebar inputs
-    st.sidebar.title("⚙️ Settings")
-
-    lstm_layers = st.sidebar.slider("LSTM Layers", 1, 4, 2)
-    lstm_units = st.sidebar.slider("Units per Layer", 16, 256, 64, step=16)
-    epochs = st.sidebar.slider("Training Epochs", 5, 50, 20)
-    batch_size = st.sidebar.selectbox("Batch Size", [8, 16, 32, 64], index=1)
-    
-    future_days = st.sidebar.slider("Days to Forecast", 7, 60, 30)
-
-    cost_light = st.sidebar.number_input("Light cost per Amp", min_value=0.0, value=2.0)
-    cost_fan = st.sidebar.number_input("Fan cost per Amp", min_value=0.0, value=1.5)
-    cost_iron = st.sidebar.number_input("Iron cost per Amp", min_value=0.0, value=3.0)
-    cost_per_amp = {'light': cost_light, 'fan': cost_fan, 'iron': cost_iron}
-
-    # Fetch data button
-    if st.button("Fetch & Refresh Data"):
-        st.session_state.df_original = fetch_data()
-        st.success("Data refreshed!")
-
-    if "df_original" not in st.session_state:
-        st.session_state.df_original = fetch_data()
-
-    df_original = st.session_state.df_original
-
-    if df_original.empty:
-        st.warning("No data found. Please refresh after data is available.")
-        return
-
-    st.subheader("Historical Data Preview")
-    st.dataframe(df_original.tail(15))
-
-    # Normalize & prepare data
-    seq_len = 10
-    df_scaled, scaler = normalize_data(df_original)
-
-    if len(df_scaled) < seq_len + 1:
-        st.warning(f"Not enough data points to prepare sequences (need at least {seq_len+1}).")
-        return
-
-    X, y = prepare_sequences(df_scaled, seq_len)
-
-    # Train model
-    if st.button("Train LSTM Model"):
-        with st.spinner("Training LSTM model..."):
-            model = build_train_model(X, y, seq_len, lstm_units, lstm_layers, epochs, batch_size)
-            st.session_state.model = model
-        st.success("Model training completed!")
-
-    if "model" not in st.session_state:
-        st.info("Train the model to make predictions.")
-        return
-
-    model = st.session_state.model
-
-    # Make next prediction
-    next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len)
-
-    # Calculate % changes
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
 
-    st.subheader("Next Hour Prediction")
-    st.write(f"**Light:** {next_pred[0]:.3f} A, change {format_change(light_change)}")
-    st.write(f"**Fan:** {next_pred[1]:.3f} A, change {format_change(fan_change)}")
-    st.write(f"**Iron:** {next_pred[2]:.3f} A, change {format_change(iron_change)}")
+    next_cost = (
+        next_pred[0] * 2 +
+        next_pred[1] * 1.5 +
+        next_pred[2] * 3
+    )
 
-    # Forecast future usage
-    future_df = forecast_future(model, df_scaled, scaler, seq_len, future_days)
-
-    st.subheader(f"Forecast for Next {future_days} Days")
-    plot_forecast_plotly(future_df, cost_per_amp)
-
-    # Anomaly detection and explanation
+    future_df = forecast_future(model, df_scaled, scaler)
+    plot_forecast(future_df)
+    plot_trends(df_original)
     anomalies = detect_anomalies(df_original)
+    efficiency_score = compute_efficiency(df_original)
+    plot_seasonal_usage(df_original)
+    upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
+
+    summary = "\n🧾 FINAL REPORT\n\n🔮 Predicted Next Usage:\n"
+    summary += f"  Light usage {format_change(light_change)}\n"
+    summary += f"  Fan usage {format_change(fan_change)}\n"
+    summary += f"  Iron usage {format_change(iron_change)}\n"
+    summary += f"\n💰 Estimated Cost of Next Usage: ₹{next_cost:.2f}\n"
+
     if not anomalies.empty:
-        st.subheader("Detected Anomalies")
-        st.dataframe(anomalies)
-
-        st.subheader("Anomaly Explanations")
-        explanations = explain_anomalies(df_original, anomalies)
-        for dt_str, reasons in explanations:
-            st.write(f"**{dt_str}**")
-            if reasons:
-                for r in reasons:
-                    st.markdown(f"- {r}")
-            else:
-                st.write("- No clear reason found.")
-
+        summary += "\n⚠️ Anomalies Detected (latest 5 readings):\n"
+        summary += anomalies[['light', 'fan', 'iron']].tail().to_string() + "\n"
     else:
-        st.info("No anomalies detected.")
+        summary += "\n✅ No significant anomalies detected.\n"
 
-    # Upload data to Firebase
-    if st.button("Upload Forecast & Anomalies to Firebase"):
-        with st.spinner("Uploading data..."):
-            upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
-        st.success("Data uploaded successfully!")
+    summary += "\n⚙️ Appliance Efficiency Scores (0–100):\n"
+    for device, score in efficiency_score.items():
+        summary += f"  {device.capitalize()}: {score:.1f}\n"
+
+    print(summary)
 
 if __name__ == "__main__":
     main()
