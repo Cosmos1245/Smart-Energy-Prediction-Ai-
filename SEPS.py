@@ -1,5 +1,4 @@
 import streamlit as st
-import json
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -13,24 +12,21 @@ from datetime import datetime
 
 # --- Firebase Initialization ---
 def init_firebase():
-    # Parse the JSON string from secrets into a dict
-    firebase_json = st.secrets["firebase"]
-    firebase_config = json.loads(firebase_json)
-    
-    # Fix the private_key newlines
-    firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
-    
+    firebase_config = st.secrets["firebase"]
+    # Fix private key newlines if necessary
+    if isinstance(firebase_config.get("private_key"), str):
+        firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
         })
-
+    st.success("✅ Firebase initialized")
 
 # --- Fetch data from Firebase ---
 def fetch_data():
     readings_ref = db.reference('/readings')
-    readings_raw = readings_ref.get()
+    readings_raw = readings_ref.get() or {}
     def is_valid_unix(key):
         try:
             ts = int(key)
@@ -186,59 +182,69 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
         'iron_change_pct': float(iron_change),
         'forecasted_cost': float(next_cost),
         'anomalies': anomalies.to_dict() if not anomalies.empty else {},
-        'future_30days': future_df.round(3).to_dict(orient='records'),
-        'updated_at': datetime.now().isoformat()
+        'future_30days': future_df.to_dict()
     })
 
-# --- Main ---
 def main():
-    st.title("Smart Energy Prediction System (SEPS)")
+    st.title("Smart Energy Prediction AI - SEPS")
+
     init_firebase()
-    with st.spinner("Fetching data from Firebase..."):
-        df = fetch_data()
-    st.write("### Recent Energy Usage Data", df.tail(10))
-    df_scaled, scaler = normalize_data(df)
-    seq_len = 10
-    X, y = prepare_sequences(df_scaled, seq_len)
-    model = build_train_model(X, y, seq_len)
-    next_pred, current_actual = predict_next(model, df_scaled, scaler, seq_len)
+
+    df_original = fetch_data()
+
+    if df_original.empty:
+        st.warning("No valid data fetched from Firebase.")
+        return
+
+    st.subheader("Raw Data")
+    st.dataframe(df_original.tail(10))
+
+    df_scaled, scaler = normalize_data(df_original)
+    X, y = prepare_sequences(df_scaled)
+    model = build_train_model(X, y)
+
+    next_pred, current_actual = predict_next(model, df_scaled, scaler)
+
+    st.subheader("Next Minute Prediction")
+    st.write(f"Light: {next_pred[0]:.3f} Amps, Fan: {next_pred[1]:.3f} Amps, Iron: {next_pred[2]:.3f} Amps")
+
+    # Calculate percentage changes
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
-    st.write("### Next Predicted Usage")
-    st.write(f"Light: {next_pred[0]:.3f} (Change: {light_change:.2f}%)")
-    st.write(f"Fan: {next_pred[1]:.3f} (Change: {fan_change:.2f}%)")
-    st.write(f"Iron: {next_pred[2]:.3f} (Change: {iron_change:.2f}%)")
-    future_df = forecast_future(model, df_scaled, scaler, seq_len, future_steps=30)
+
+    st.write(f"Change in Light Usage: {light_change:.2f}%")
+    st.write(f"Change in Fan Usage: {fan_change:.2f}%")
+    st.write(f"Change in Iron Usage: {iron_change:.2f}%")
+
+    future_df = forecast_future(model, df_scaled, scaler)
+
+    st.subheader("30-Day Forecast")
+    st.dataframe(future_df.head())
+
     plot_forecast(future_df)
-    plot_trends(df)
-    anomalies = detect_anomalies(df)
-    st.write("### Detected Anomalies")
-    st.write(anomalies if not anomalies.empty else "No anomalies detected")
-    efficiency_score = compute_efficiency(df)
-    st.write(f"### Appliance Efficiency Score: {efficiency_score.mean():.2f}")
-    plot_seasonal_usage(df)
-    upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
 
-    # --- Final Summary Report ---
-    st.markdown("## 🧾 FINAL REPORT")
-    st.markdown(f"""
-    🔮 **Predicted Next Usage:**
-    - Light usage {'increased significantly' if light_change > 10 else 'decreased significantly' if light_change < -10 else 'increased moderately' if light_change > 0 else 'decreased moderately'} ({light_change:+.1f}%) {'🔺' if light_change > 0 else '▼'}
-    - Fan usage {'increased significantly' if fan_change > 10 else 'decreased significantly' if fan_change < -10 else 'increased moderately' if fan_change > 0 else 'decreased moderately'} ({fan_change:+.1f}%) {'🔺' if fan_change > 0 else '▼'}
-    - Iron usage {'increased significantly' if iron_change > 10 else 'decreased significantly' if iron_change < -10 else 'increased moderately' if iron_change > 0 else 'decreased moderately'} ({iron_change:+.1f}%) {'🔺' if iron_change > 0 else '▼'}
+    st.subheader("Weekly and Monthly Trends")
+    plot_trends(df_original)
 
-    💰 **Estimated Cost of Next Usage**: ₹{(next_pred[0]*2 + next_pred[1]*1.5 + next_pred[2]*3):.2f}
+    st.subheader("Anomalies Detected")
+    anomalies = detect_anomalies(df_original)
+    if anomalies.empty:
+        st.write("No anomalies detected.")
+    else:
+        st.dataframe(anomalies)
 
-    {'✅ No significant anomalies detected.' if anomalies.empty else '⚠️ Anomalies detected!'}
+    st.subheader("Appliance Efficiency Scores")
+    efficiency = compute_efficiency(df_original)
+    st.write(efficiency)
 
-    ⚙️ **Appliance Efficiency Scores (0–100):**
-    - Light: {efficiency_score['light']:.1f}
-    - Fan: {efficiency_score['fan']:.1f}
-    - Iron: {efficiency_score['iron']:.1f}
-    """)
+    st.subheader("Seasonal Usage Patterns")
+    plot_seasonal_usage(df_original)
 
-    st.success("✅ Forecast and analytics uploaded to Firebase")
+    st.subheader("Upload Forecast & Anomalies to Firebase")
+    if st.button("Upload to Firebase"):
+        upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
+        st.success("Uploaded forecast and anomalies to Firebase.")
 
 if __name__ == "__main__":
     main()
