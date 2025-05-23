@@ -169,9 +169,7 @@ def upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_
 
 def main():
     st.title("Smart Energy Prediction AI - SEPS")
-
     init_firebase()
-
     df_original = fetch_data()
 
     if df_original.empty:
@@ -181,16 +179,25 @@ def main():
     st.subheader("Raw Data")
     st.dataframe(df_original.tail(10))
 
+    # 🔎 Peak Appliance Usage (Historical)
+    peak_info = {}
+    for appliance in ['light', 'fan', 'iron']:
+        peak_usage = df_original[appliance].max()
+        peak_time = df_original[appliance].idxmax()
+        peak_info[appliance] = (peak_usage, peak_time)
+
+    st.subheader("🔎 Peak Appliance Usage (Historical)")
+    for appliance, (usage, time) in peak_info.items():
+        st.markdown(f"**{appliance.capitalize()}**: Peak usage was **{usage:.2f} Amps** at **{time.strftime('%Y-%m-%d %H:%M:%S')}**")
+
     df_scaled, scaler = normalize_data(df_original)
     X, y = prepare_sequences(df_scaled)
     model = build_train_model(X, y)
-
     next_pred, current_actual = predict_next(model, df_scaled, scaler)
 
     st.subheader("Next Minute Prediction")
     st.write(f"Light: {next_pred[0]:.3f} Amps, Fan: {next_pred[1]:.3f} Amps, Iron: {next_pred[2]:.3f} Amps")
 
-    # Calculate percentage changes
     light_change = pct_change(current_actual[0], next_pred[0])
     fan_change = pct_change(current_actual[1], next_pred[1])
     iron_change = pct_change(current_actual[2], next_pred[2])
@@ -199,7 +206,6 @@ def main():
     st.write(f"Change in Fan Usage: {fan_change:.2f}%")
     st.write(f"Change in Iron Usage: {iron_change:.2f}%")
 
-    # Show the estimated cost always, not just in the report
     estimated_cost = next_pred[0]*2 + next_pred[1]*1.5 + next_pred[2]*3
     st.markdown(f"💰 **Estimated Cost of Next Usage**: ₹{estimated_cost:.2f}")
 
@@ -207,7 +213,6 @@ def main():
 
     st.subheader("30-Day Forecast")
     st.dataframe(future_df.head())
-
     plot_forecast(future_df)
 
     st.subheader("Weekly and Monthly Trends")
@@ -215,17 +220,11 @@ def main():
 
     st.subheader("Anomalies Detected")
     anomalies = detect_anomalies(df_original)
-    if anomalies.empty:
-        st.write("No anomalies detected.")
-    else:
-        st.dataframe(anomalies)
+    st.dataframe(anomalies) if not anomalies.empty else st.write("No anomalies detected.")
 
     st.subheader("Appliance Efficiency Scores")
     efficiency = compute_efficiency(df_original)
-    # Show as a table with correct heading (and not a '0' header)
     st.dataframe(efficiency.rename_axis('Appliance').to_frame('Efficiency Score').T)
-
-    efficiency_score = efficiency.to_dict()
 
     st.subheader("Seasonal Usage Patterns")
     plot_seasonal_usage(df_original)
@@ -233,8 +232,7 @@ def main():
     st.subheader("Upload Forecast & Anomalies to Firebase")
     if st.button("Upload to Firebase"):
         upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
-        
-        # --- Final Summary Report ---
+        efficiency_score = efficiency.to_dict()
         st.markdown("## 🧾 FINAL REPORT")
         st.markdown(f"""
 🔮 **Predicted Next Usage:**
