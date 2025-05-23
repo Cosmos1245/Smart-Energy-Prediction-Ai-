@@ -11,15 +11,13 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 def init_firebase():
-    firebase_config = dict(st.secrets["firebase"])  # Make a mutable copy
-    firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
+    firebase_config = dict(st.secrets["firebase"])
 
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
-            'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
+            'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app'
         })
-
 # --- Fetch data from Firebase ---
 def fetch_data():
     readings_ref = db.reference('/readings')
