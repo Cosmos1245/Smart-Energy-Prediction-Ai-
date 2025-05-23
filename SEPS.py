@@ -10,18 +10,15 @@ from firebase_admin import credentials, db
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-# --- Firebase Initialization ---
-def init_firebase():
-    firebase_config = st.secrets["firebase"]
-    # Fix private key newlines if necessary
-    if isinstance(firebase_config.get("private_key"), str):
-        firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
+#def init_firebase():
+    firebase_config = dict(st.secrets["firebase"])  # Make a mutable copy
+    firebase_config["private_key"] = firebase_config["private_key"].replace('\\n', '\n')
+
     if not firebase_admin._apps:
         cred = credentials.Certificate(firebase_config)
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app/'
         })
-    st.success("✅ Firebase initialized")
 
 # --- Fetch data from Firebase ---
 def fetch_data():
