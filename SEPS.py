@@ -18,6 +18,7 @@ def init_firebase():
         firebase_admin.initialize_app(cred, {
             'databaseURL': 'https://seps-ai-default-rtdb.asia-southeast1.firebasedatabase.app'
         })
+
 # --- Fetch data from Firebase ---
 def fetch_data():
     readings_ref = db.reference('/readings')
@@ -232,6 +233,7 @@ def main():
     st.subheader("Appliance Efficiency Scores")
     efficiency = compute_efficiency(df_original)
     st.write(efficiency)
+    efficiency_score = efficiency.to_dict()
 
     st.subheader("Seasonal Usage Patterns")
     plot_seasonal_usage(df_original)
@@ -239,7 +241,25 @@ def main():
     st.subheader("Upload Forecast & Anomalies to Firebase")
     if st.button("Upload to Firebase"):
         upload_to_firebase(next_pred, light_change, fan_change, iron_change, future_df, anomalies)
-        st.success("Uploaded forecast and anomalies to Firebase.")
+        
+        # --- Final Summary Report ---
+        st.markdown("## 🧾 FINAL REPORT")
+        st.markdown(f"""
+🔮 **Predicted Next Usage:**
+- Light usage {'increased significantly' if light_change > 10 else 'decreased significantly' if light_change < -10 else 'increased moderately' if light_change > 0 else 'decreased moderately'} ({light_change:+.1f}%) {'🔺' if light_change > 0 else '▼'}
+- Fan usage {'increased significantly' if fan_change > 10 else 'decreased significantly' if fan_change < -10 else 'increased moderately' if fan_change > 0 else 'decreased moderately'} ({fan_change:+.1f}%) {'🔺' if fan_change > 0 else '▼'}
+- Iron usage {'increased significantly' if iron_change > 10 else 'decreased significantly' if iron_change < -10 else 'increased moderately' if iron_change > 0 else 'decreased moderately'} ({iron_change:+.1f}%) {'🔺' if iron_change > 0 else '▼'}
+
+💰 **Estimated Cost of Next Usage**: ₹{(next_pred[0]*2 + next_pred[1]*1.5 + next_pred[2]*3):.2f}
+
+{'✅ No significant anomalies detected.' if anomalies.empty else '⚠️ Anomalies detected!'}
+
+⚙️ **Appliance Efficiency Scores (0–100):**
+- Light: {efficiency_score['light']:.1f}
+- Fan: {efficiency_score['fan']:.1f}
+- Iron: {efficiency_score['iron']:.1f}
+""")
+        st.success("✅ Forecast and analytics uploaded to Firebase")
 
 if __name__ == "__main__":
     main()
