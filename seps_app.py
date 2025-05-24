@@ -259,9 +259,9 @@ def main():
         st.markdown("## 🧾 FINAL REPORT")
         st.markdown(f"""
 🔮 **Predicted Next Usage:**
-- Light usage {'increased significantly' if light_change > 10 else 'decreased significantly' if light_change < -10 else 'increased moderately' if light_change > 0 else 'decreased moderately'} ({light_change:+.1f}%) {'🔺' if light_change > 0 else '▼'}
-- Fan usage {'increased significantly' if fan_change > 10 else 'decreased significantly' if fan_change < -10 else 'increased moderately' if fan_change > 0 else 'decreased moderately'} ({fan_change:+.1f}%) {'🔺' if fan_change > 0 else '▼'}
-- Iron usage {'increased significantly' if iron_change > 10 else 'decreased significantly' if iron_change < -10 else 'increased moderately' if iron_change > 0 else 'decreased moderately'} ({iron_change:+.1f}%) {'🔺' if iron_change > 0 else '▼'}
+- Light usage {'increased significantly' if light_change > 10 else 'decreased significantly' if light_change < -10 else 'increased moderately' if light_change > 0 else 'decreased moderately'} ({light_change:.2f}%)
+- Fan usage {'increased significantly' if fan_change > 10 else 'decreased significantly' if fan_change < -10 else 'increased moderately' if fan_change > 0 else 'decreased moderately'} ({fan_change:.2f}%)
+- Iron usage {'increased significantly' if iron_change > 10 else 'decreased significantly' if iron_change < -10 else 'increased moderately' if iron_change > 0 else 'decreased moderately'} ({iron_change:.2f}%)
 
 💰 **Estimated Cost of Next Usage**: ₹{estimated_cost:.2f}
 
