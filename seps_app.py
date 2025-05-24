@@ -243,7 +243,10 @@ def main():
 
     st.subheader("⚠️ Anomalies Detected")
     anomalies = detect_anomalies(df_original)
-    st.dataframe(anomalies) if not anomalies.empty else st.write("No anomalies detected.")
+    if not anomalies.empty:
+        st.dataframe(anomalies)
+    else:
+        st.write("No anomalies detected.")
 
     st.subheader("⚙️ Appliance Efficiency Scores")
     efficiency = compute_efficiency(df_original)
