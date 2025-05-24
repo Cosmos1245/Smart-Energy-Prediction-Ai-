@@ -113,18 +113,42 @@ def plot_forecast(future_df):
 def plot_trends(df_original):
     df_original = df_original.copy()
     df_original.index = pd.to_datetime(df_original.index)
-    df_original['week'] = df_original.index.isocalendar().week
-    df_original['month'] = df_original.index.month
-    weekly_avg = df_original.groupby('week')[['light', 'fan', 'iron']].mean()
-    monthly_avg = df_original.groupby('month')[['light', 'fan', 'iron']].mean()
+    df_original['week_start'] = df_original.index.to_period('W').start_time
+    df_original['month_start'] = df_original.index.to_period('M').start_time
+
+    weekly_avg = df_original.groupby('week_start')[['light', 'fan', 'iron']].mean()
+    monthly_avg = df_original.groupby('month_start')[['light', 'fan', 'iron']].mean()
+
     COST_PER_AMP_HOUR = {'light': 2, 'fan': 1.5, 'iron': 3}
     weekly_cost = (weekly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
     monthly_cost = (monthly_avg * pd.Series(COST_PER_AMP_HOUR)).sum(axis=1)
+
     fig, axs = plt.subplots(2, 2, figsize=(14, 8))
-    weekly_avg.plot(ax=axs[0,0], title='Weekly Averages', marker='o')
-    monthly_avg.plot(ax=axs[0,1], title='Monthly Averages', marker='o')
-    weekly_cost.plot(ax=axs[1,0], title='Weekly Cost (₹)', color='purple', marker='x')
-    monthly_cost.plot(ax=axs[1,1], title='Monthly Cost (₹)', color='green', marker='x')
+
+    weekly_avg.plot(ax=axs[0,0], marker='o')
+    axs[0,0].set_title('Weekly Averages')
+    axs[0,0].set_xlabel("Week Start")
+    axs[0,0].set_ylabel("Amps")
+
+    monthly_avg.plot(ax=axs[0,1], marker='o')
+    axs[0,1].set_title('Monthly Averages')
+    axs[0,1].set_xlabel("Month Start")
+    axs[0,1].set_ylabel("Amps")
+
+    weekly_cost.plot(ax=axs[1,0], marker='x', color='purple')
+    axs[1,0].set_title('Weekly Cost (₹)')
+    axs[1,0].set_xlabel("Week Start")
+    axs[1,0].set_ylabel("Cost")
+
+    monthly_cost.plot(ax=axs[1,1], marker='x', color='green')
+    axs[1,1].set_title('Monthly Cost (₹)')
+    axs[1,1].set_xlabel("Month Start")
+    axs[1,1].set_ylabel("Cost")
+
+    for ax in axs.flat:
+        ax.grid(True)
+        ax.tick_params(axis='x', rotation=45)
+
     plt.tight_layout()
     st.pyplot(fig)
 
@@ -179,7 +203,6 @@ def main():
     st.subheader("Raw Data")
     st.dataframe(df_original.tail(10))
 
-    # 🔎 Peak Appliance Usage (Historical)
     peak_info = {}
     for appliance in ['light', 'fan', 'iron']:
         peak_usage = df_original[appliance].max()
